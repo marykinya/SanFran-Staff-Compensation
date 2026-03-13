@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large data files
+*.zip
+
+# Raw data files (exclude large source CSVs)
+data/Employee_Compensation.csv
+data/new_union.csv
+data/new_jobs.csv
+
+# Streamlit cache
+.streamlit/
+
+# Dependencies
+.venv/
+venv/
+env/
