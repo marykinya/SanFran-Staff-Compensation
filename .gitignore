@@ -25,9 +25,9 @@ Thumbs.db
 # Large data files
 *.zip
 
-# Large model files
-models/best_model.pkl
-*.pkl
+# Large model files (uncomment below if models exceed ~100MB)
+# models/best_model.pkl
+# *.pkl
 
 # Raw data files (exclude large source CSVs)
 data/Employee_Compensation.csv
