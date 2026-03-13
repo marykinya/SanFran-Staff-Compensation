@@ -104,6 +104,9 @@ def prepare_prediction_input(year_type, year, organization_group, department, jo
                     # Use default value for unknown categories
                     input_data[col] = 0
         
+        # Handle duplicate 'job' column from training data (pandas renamed it to 'job.1')
+        input_data['job.1'] = input_data['job']
+
         # Calculate engineered features
         input_data['salary_component'] = input_data['salaries'] + input_data['overtime'] + input_data['other_salaries']
         input_data['benefits_component'] = input_data['retirement'] + input_data['health_and_dental'] + input_data['other_benefits']
