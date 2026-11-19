@@ -1,0 +1,68 @@
+{
+  "features": [
+    "job_code",
+    "job_family",
+    "department_code",
+    "organization_group",
+    "union_code",
+    "year"
+  ],
+  "categorical_features": [
+    "job_code",
+    "job_family",
+    "department_code",
+    "organization_group",
+    "union_code"
+  ],
+  "train_years": [
+    2013,
+    2021
+  ],
+  "eval": {
+    "train_years": [
+      2013,
+      2020
+    ],
+    "test_year": 2021,
+    "n_train": 256321,
+    "n_test": 33411,
+    "results": {
+      "City-wide median": {
+        "R2": -0.060627781068230746,
+        "MAE": 50340.33385127284,
+        "MedAPE": 0.2594230537117928,
+        "within_10pct": 0.210020651881117
+      },
+      "Job title median (last year, grown)": {
+        "R2": 0.7806069757100556,
+        "MAE": 19945.311883190287,
+        "MedAPE": 0.07737391581216646,
+        "within_10pct": 0.5916314986082428
+      },
+      "LightGBM (this model)": {
+        "R2": 0.7779106083623765,
+        "MAE": 19815.861754713133,
+        "MedAPE": 0.07703338729940878,
+        "within_10pct": 0.5963604800814103,
+        "coverage_80": 0.8337673221394152
+      }
+    }
+  },
+  "n_rounds": 971,
+  "band_widen": 1.35,
+  "pay_index": {
+    "medians": {
+      "2013": 116030.91,
+      "2014": 118445.45999999999,
+      "2015": 121408.28,
+      "2016": 121362.095,
+      "2017": 127641.30999999998,
+      "2018": 132669.21000000002,
+      "2019": 137857.535,
+      "2020": 145246.55,
+      "2021": 151772.96000000002
+    },
+    "slope": 0.03382100405210899,
+    "intercept": -56.443613337149095
+  }
+}

@@ -1,770 +1,352 @@
-"""
-San Francisco Employee Compensation Prediction - Streamlit App
-A web app to predict employee compensation based on job roles and organizational attributes.
-"""
+"""San Francisco public pay explorer.
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-import joblib
+Estimates what a City and County of San Francisco role pays, from the role alone,
+and explores how city pay has changed. Data: DataSF Employee Compensation.
+"""
+import json
 from pathlib import Path
 
-# Page configuration
-st.set_page_config(
-    page_title="SF Employee Compensation Predictor",
-    page_icon="💰",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+import lightgbm as lgb
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
 
-# Custom CSS
-st.markdown("""
-    <style>
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        margin: 10px 0;
-    }
-    .header-title {
-        color: #1f77b4;
-        font-size: 2.5rem;
-        font-weight: bold;
-        margin-bottom: 10px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+ROOT = Path(__file__).parent
+APP_DATA = ROOT / "app_data"
+MODELS = ROOT / "models"
+REPORTS = ROOT / "reports"
 
-# ==================== LOAD MODEL ARTIFACTS ====================
+BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
+GREY = "#8a8985"
+FEATURE_LABELS = {
+    "job_code": "Job title", "job_family": "Job family", "department_code": "Department",
+    "organization_group": "Organisation group", "union_code": "Union", "year": "Year",
+}
+
+st.set_page_config(page_title="SF Public Pay Explorer", page_icon="💼", layout="wide")
+
+
+# ------------------------------------------------------------------ loading
 @st.cache_resource
-def load_model_artifacts():
-    """Load the trained model and preprocessing artifacts"""
-    try:
-        model = joblib.load('models/best_model.pkl')
-        scaler = joblib.load('models/scaler.pkl')
-        label_encoders = joblib.load('models/label_encoders.pkl')
-        feature_names = joblib.load('models/feature_names.pkl')
-        return model, scaler, label_encoders, feature_names
-    except FileNotFoundError as e:
-        st.error(f"❌ Error loading model files: {e}")
-        st.info("Please ensure you have run the Jupyter notebook to generate model artifacts.")
-        return None, None, None, None
+def load_models():
+    models = {k: lgb.Booster(model_file=str(MODELS / f"lgbm_{k}.txt")) for k in ("p10", "p50", "p90")}
+    meta = json.loads((MODELS / "metadata.json").read_text())
+    return models, meta
+
 
 @st.cache_data
-def load_raw_data():
-    """Load the original data for reference and visualizations"""
-    try:
-        df = pd.read_csv('data/cleaned_Employee_Compensation.csv')
-        return df
-    except FileNotFoundError:
-        st.error("❌ Error loading raw data")
-        return None
+def load_tables():
+    read = lambda name, **kw: pd.read_csv(APP_DATA / name, **kw)
+    codes = {"job_code": str, "department_code": str, "union_code": str}
+    return {
+        "combos": read("combos.csv", dtype=codes),
+        "lookup": read("job_lookup.csv", dtype={"job_code": str}),
+        "trend": read("pay_trend.csv"),
+        "overtime": read("overtime_by_department.csv"),
+        "gaps": read("same_job_gaps.csv", dtype={"job_code": str}),
+        "gap_detail": read("same_job_gap_detail.csv", dtype={"job_code": str}),
+        "comparison": pd.read_csv(REPORTS / "model_comparison.csv", index_col=0),
+        "importance": pd.read_csv(REPORTS / "feature_importance.csv"),
+        "headline": json.loads((APP_DATA / "headline.json").read_text()),
+    }
 
-# Load artifacts
-model, scaler, label_encoders, feature_names = load_model_artifacts()
-df_raw = load_raw_data()
 
-if model is None or df_raw is None:
-    st.stop()
+models, meta = load_models()
+T = load_tables()
+H = T["headline"]
+LATEST = H["latest_complete_year"]
 
-# ==================== HELPER FUNCTIONS ====================
-def prepare_prediction_input(year_type, year, organization_group, department, job_family, 
-                            job, union, salaries, overtime, other_salaries, 
-                            retirement, health_dental, other_benefits):
-    """Prepare input data for model prediction"""
-    try:
-        # Store original year_type before encoding
-        is_fiscal = (year_type == 'Fiscal')
-        
-        # Create input dataframe
-        input_data = pd.DataFrame([{
-            'year_type': year_type,
-            'year': year,
-            'organization_group': organization_group,
-            'department': department,
-            'job_family': job_family,
-            'job': job,
-            'union': union,
-            'salaries': salaries,
-            'overtime': overtime,
-            'other_salaries': other_salaries,
-            'retirement': retirement,
-            'health_and_dental': health_dental,
-            'other_benefits': other_benefits,
-        }])
-        
-        # Encode categorical variables
-        for col in ['year_type', 'organization_group', 'department', 'job_family', 'job', 'union']:
-            if col in label_encoders:
-                try:
-                    input_data[col] = label_encoders[col].transform(input_data[col].astype(str))
-                except (ValueError, KeyError):
-                    # Use default value for unknown categories
-                    input_data[col] = 0
-        
-        # Handle duplicate 'job' column from training data (pandas renamed it to 'job.1')
-        input_data['job.1'] = input_data['job']
 
-        # Calculate engineered features
-        input_data['salary_component'] = input_data['salaries'] + input_data['overtime'] + input_data['other_salaries']
-        input_data['benefits_component'] = input_data['retirement'] + input_data['health_and_dental'] + input_data['other_benefits']
-        input_data['benefits_salary_ratio'] = input_data['benefits_component'] / (input_data['salary_component'] + 1)
-        input_data['overtime_salary_ratio'] = input_data['overtime'] / (input_data['salaries'] + 1)
-        input_data['is_fiscal_year'] = int(is_fiscal)
-        
-        # Select only required features in correct order
-        input_processed = input_data[feature_names].astype('float64')
-        
-        return input_processed, input_data
-    except Exception as e:
-        st.error(f"❌ Error preparing input: {str(e)}")
-        return None, None
+def pay_index(year: int) -> float:
+    idx = meta["pay_index"]
+    if str(year) in idx["medians"]:
+        return idx["medians"][str(year)]
+    return float(np.exp(idx["intercept"] + idx["slope"] * year))
 
-# ==================== MAIN APP ====================
-st.markdown('<div class="header-title">💰 SF Employee Compensation Predictor</div>', unsafe_allow_html=True)
-st.write("Predict total employee compensation based on job roles and organizational attributes")
-st.divider()
 
-# Sidebar for navigation
-page = st.sidebar.radio(
-    "Navigation",
-    ["🔮 Prediction", "📊 Data Analysis", "📈 Model Performance", "ℹ️ About"]
+def estimate(row: dict) -> dict:
+    X = pd.DataFrame([row])
+    for c in meta["categorical_features"]:
+        X[c] = pd.Categorical(X[c].astype(str))
+    X = X[meta["features"]]
+    raw = {k: float(m.predict(X)[0]) for k, m in models.items()}
+    w = meta["band_widen"]
+    mid = raw["p50"]
+    lo = mid - w * max(mid - raw["p10"], 0)
+    hi = mid + w * max(raw["p90"] - mid, 0)
+    level = pay_index(row["year"])
+    contrib = models["p50"].predict(X, pred_contrib=True)[0]
+    effects = pd.Series(contrib[:-1], index=meta["features"])
+    return {"p10": level * np.exp(lo), "p50": level * np.exp(mid), "p90": level * np.exp(hi),
+            "level": level, "base": contrib[-1], "effects": effects}
+
+
+def money(x: float) -> str:
+    return f"${x:,.0f}"
+
+
+def style(fig: go.Figure, height: int = 380) -> go.Figure:
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=30, b=10),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                      legend=dict(orientation="h", y=1.08, x=0), hoverlabel=dict(namelength=-1))
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(gridcolor="rgba(128,128,128,0.15)", zeroline=False)
+    return fig
+
+
+# ------------------------------------------------------------------ header
+st.title("San Francisco Public Pay Explorer")
+st.caption(
+    f"What does a City of San Francisco job really pay? Built on {H['first_year']}-{LATEST} "
+    "fiscal-year records from DataSF's Employee Compensation dataset."
 )
 
-# ==================== PAGE 1: PREDICTION ====================
-if page == "🔮 Prediction":
-    st.header("Predict Employee Compensation")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader("Enter Job Details")
-        
-        # Get unique values from data
-        years = sorted(df_raw['year'].unique())
-        year_types = df_raw['year_type'].unique()
-        organizations = sorted(df_raw['organization_group'].unique())
-        departments = sorted(df_raw['department'].unique())
-        job_families = sorted(df_raw['job_family'].unique())
-        jobs = sorted(df_raw['job'].unique())
-        unions = sorted(df_raw['union'].unique())
-        
-        # Create input form
-        with st.form("prediction_form"):
-            col_a, col_b = st.columns(2)
-            
-            with col_a:
-                year_type = st.selectbox("Year Type", year_types)
-                year = st.selectbox("Year", years)
-                organization_group = st.selectbox("Organization Group", organizations)
-                department = st.selectbox("Department", departments)
-            
-            with col_b:
-                job_family = st.selectbox("Job Family", job_families)
-                job = st.selectbox("Job Title", jobs)
-                union = st.selectbox("Union", unions)
-                
-            st.subheader("Compensation Components")
-            col_c, col_d = st.columns(2)
-            
-            with col_c:
-                # Get median values for suggestions
-                salary_median = df_raw[df_raw['job'] == job]['salaries'].median() if job in df_raw['job'].values else 50000
-                overtime_median = df_raw[df_raw['job'] == job]['overtime'].median() if job in df_raw['job'].values else 2000
-                other_salary_median = df_raw[df_raw['job'] == job]['other_salaries'].median() if job in df_raw['job'].values else 1000
-                
-                salaries = st.number_input("Base Salaries ($)", value=int(salary_median), step=1000)
-                overtime = st.number_input("Overtime ($)", value=int(overtime_median), step=100)
-                other_salaries = st.number_input("Other Salaries ($)", value=int(other_salary_median), step=100)
-            
-            with col_d:
-                retirement_median = df_raw[df_raw['job'] == job]['retirement'].median() if job in df_raw['job'].values else 5000
-                health_median = df_raw[df_raw['job'] == job]['health_and_dental'].median() if job in df_raw['job'].values else 3000
-                benefits_median = df_raw[df_raw['job'] == job]['other_benefits'].median() if job in df_raw['job'].values else 2000
-                
-                retirement = st.number_input("Retirement ($)", value=int(retirement_median), step=500)
-                health_dental = st.number_input("Health & Dental ($)", value=int(health_median), step=500)
-                other_benefits = st.number_input("Other Benefits ($)", value=int(benefits_median), step=500)
-            
-            # Prediction button
-            predict_button = st.form_submit_button(
-                "🎯 Predict Compensation",
-                use_container_width=True,
-                type="primary"
-            )
-    
-    with col2:
-        st.subheader("Quick Stats")
-        
-        # Get statistics for selected job
-        if job in df_raw['job'].values:
-            job_data = df_raw[df_raw['job'] == job]
-            
-            st.metric("Avg Compensation", f"${job_data['total_compensation'].mean():,.0f}")
-            st.metric("Median Compensation", f"${job_data['total_compensation'].median():,.0f}")
-            st.metric("Count", f"{len(job_data):,}")
-    
-    # ==================== MAKE PREDICTION ====================
-    if predict_button:
-        with st.spinner("🔄 Making prediction..."):
-            input_processed, input_raw = prepare_prediction_input(
-                year_type, year, organization_group, department, job_family,
-                job, union, salaries, overtime, other_salaries,
-                retirement, health_dental, other_benefits
-            )
-            
-            if input_processed is not None:
-                # Make prediction
-                prediction = model.predict(input_processed)[0]
-                
-                # Calculate components
-                total_salary = salaries + overtime + other_salaries
-                total_benefits = retirement + health_dental + other_benefits
-                
-                # Create results columns
-                st.divider()
-                st.subheader("🎯 Prediction Results")
-                
-                result_col1, result_col2, result_col3, result_col4 = st.columns(4)
-                
-                with result_col1:
-                    st.metric(
-                        "Predicted Total Compensation",
-                        f"${prediction:,.0f}",
-                        delta=f"${prediction - (total_salary + total_benefits):,.0f}",
-                        delta_color="inverse"
-                    )
-                
-                with result_col2:
-                    st.metric("Total Salary Component", f"${total_salary:,.0f}")
-                
-                with result_col3:
-                    st.metric("Total Benefits Component", f"${total_benefits:,.0f}")
-                
-                with result_col4:
-                    benefits_pct = (total_benefits / (total_salary + total_benefits)) * 100 if (total_salary + total_benefits) > 0 else 0
-                    st.metric("Benefits %", f"{benefits_pct:.1f}%")
-                
-                # Comparison with actual data
-                if job in df_raw['job'].values:
-                    job_data = df_raw[df_raw['job'] == job]
-                    actual_mean = job_data['total_compensation'].mean()
-                    diff_pct = ((prediction - actual_mean) / actual_mean) * 100
-                    
-                    st.divider()
-                    st.subheader("📊 Comparison with Historical Data")
-                    col_compare1, col_compare2, col_compare3 = st.columns(3)
-                    
-                    with col_compare1:
-                        st.metric("Predicted Compensation", f"${prediction:,.0f}")
-                    
-                    with col_compare2:
-                        st.metric("Job Historical Average", f"${actual_mean:,.0f}")
-                    
-                    with col_compare3:
-                        st.metric("Difference", f"{diff_pct:+.1f}%")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric(f"Median total comp, FY{LATEST}", money(H["median_total_latest"]),
+          f"+{H['growth_total_pct']:.0%} since FY{H['first_year']}")
+c2.metric("Benefits growth per year", f"{H['cagr_benefits']:.1%}",
+          f"vs {H['cagr_base']:.1%} for base pay", delta_color="off", delta_arrow="off")
+c3.metric("Employees earning overtime", f"{H['share_with_overtime_latest']:.0%}",
+          f"overtime = {H['overtime_share_latest']:.1%} of cash pay", delta_color="off", delta_arrow="off")
+c4.metric("Full-year employees", f"{H['full_year_employees_latest']:,}", f"FY{LATEST}", delta_color="off", delta_arrow="off")
 
-# ==================== PAGE 2: DATA ANALYSIS ====================
-elif page == "📊 Data Analysis":
-    st.header("Data Analysis & Insights")
-    
-    tab1, tab2, tab3, tab4 = st.tabs(["Jobs", "Departments", "Organization", "Compensation"])
-    
-    with tab1:
-        st.subheader("Top Jobs by Average Compensation")
-        top_jobs = df_raw.groupby('job')['total_compensation'].agg(['mean', 'count']).reset_index()
-        top_jobs.columns = ['Job', 'Avg Compensation', 'Count']
-        top_jobs = top_jobs[top_jobs['Count'] >= 10].sort_values('Avg Compensation', ascending=False).head(15)
-        
-        fig = px.bar(top_jobs, x='Avg Compensation', y='Job',
-                    orientation='h',
-                    title='Top 15 Jobs by Average Compensation',
-                    labels={'Avg Compensation': 'Average Total Compensation ($)'})
-        fig.update_xaxes(tickformat="$,.0f")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab2:
-        st.subheader("Average Compensation by Department")
-        dept_comp = df_raw.groupby('department')['total_compensation'].agg(['mean', 'count']).reset_index()
-        dept_comp.columns = ['Department', 'Avg Compensation', 'Count']
-        dept_comp = dept_comp.sort_values('Avg Compensation', ascending=False).head(12)
-        
-        fig = px.bar(dept_comp, x='Avg Compensation', y='Department',
-                    orientation='h',
-                    title='Top Departments by Average Compensation',
-                    color='Count')
-        fig.update_xaxes(tickformat="$,.0f")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab3:
-        st.subheader("Average Compensation by Organization Group")
-        org_comp = df_raw.groupby('organization_group')['total_compensation'].agg(['mean', 'count']).reset_index()
-        org_comp.columns = ['Organization Group', 'Avg Compensation', 'Count']
-        org_comp = org_comp.sort_values('Avg Compensation', ascending=True)
-        
-        fig = px.bar(org_comp, y='Organization Group', x='Avg Compensation',
-                    color='Count',
-                    title='Average Compensation by Organization Group')
-        fig.update_xaxes(tickformat="$,.0f")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with tab4:
-        st.subheader("Compensation Distribution")
-        
-        col_dist1, col_dist2 = st.columns(2)
-        
-        with col_dist1:
-            fig = px.histogram(df_raw, x='total_compensation', nbins=50,
-                             title='Distribution of Total Compensation')
-            fig.update_xaxes(tickformat="$,.0f")
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col_dist2:
-            # Compensation components pie chart
-            salary_cols = ['salaries', 'overtime', 'other_salaries', 'retirement', 'health_and_dental', 'other_benefits']
-            avg_components = df_raw[salary_cols].mean()
-            
-            fig = px.pie(values=avg_components.values, names=salary_cols,
-                        title='Average Compensation Components')
-            st.plotly_chart(fig, use_container_width=True)
+tab_est, tab_ins, tab_model = st.tabs(["🔮 Pay estimator", "📊 Insights", "🧪 How the model works"])
 
-# ==================== PAGE 3: MODEL PERFORMANCE ====================
-elif page == "📈 Model Performance":
-    st.header("📈 Model Performance & How It Works")
-    st.write("A simple breakdown of how this prediction model was built, tested, and why it works so well.")
-
-    # ── Parse the summary report ──────────────────────────────────────────────
-    report_data = {}
-    try:
-        with open('model_summary_report.txt', 'r') as f:
-            raw_report = f.read()
-
-        for line in raw_report.splitlines():
-            line = line.strip()
-            if "Total Records:" in line:
-                report_data['total_records'] = line.split(":")[-1].strip().replace(",", "")
-            elif "Training Records:" in line:
-                report_data['train_records'] = line.split(":")[-1].strip().replace(",", "")
-            elif "Test Records:" in line:
-                report_data['test_records'] = line.split(":")[-1].strip().replace(",", "")
-            elif "Number of Features:" in line:
-                report_data['n_features'] = line.split(":")[-1].strip()
-            elif "Mean Compensation:" in line:
-                report_data['mean_comp'] = line.split(":")[-1].strip()
-            elif "Median Compensation:" in line:
-                report_data['median_comp'] = line.split(":")[-1].strip()
-            elif "Min Compensation:" in line:
-                report_data['min_comp'] = line.split(":")[-1].strip()
-            elif "Max Compensation:" in line:
-                report_data['max_comp'] = line.split(":")[-1].strip()
-            elif "Std Deviation:" in line:
-                report_data['std_comp'] = line.split(":")[-1].strip()
-            elif "Test R² Score:" in line:
-                report_data['r2'] = line.split(":")[-1].strip()
-            elif "Test RMSE:" in line:
-                report_data['rmse'] = line.split(":")[-1].strip()
-            elif "Test MAE:" in line:
-                report_data['mae'] = line.split(":")[-1].strip()
-            elif "Cross-Validation R²" in line:
-                report_data['cv'] = line.split(":")[-1].strip()
-
-        # Feature importance from report
-        feature_lines = []
-        in_features = False
-        for line in raw_report.splitlines():
-            if "TOP 10 IMPORTANT FEATURES" in line:
-                in_features = True
-                continue
-            if in_features and line.strip().startswith("==="):
-                break
-            if in_features and ":" in line and line.strip():
-                parts = line.strip().split(":")
-                if len(parts) == 2:
-                    name = parts[0].split(".")[-1].strip()
-                    try:
-                        score = float(parts[1].strip())
-                        feature_lines.append((name, score))
-                    except ValueError:
-                        pass
-
-    except FileNotFoundError:
-        st.warning("⚠️ Model summary report not found. Please run the Jupyter notebook first.")
-        feature_lines = []
-
-    # ── Section 1: Dataset at a Glance ───────────────────────────────────────
-    st.subheader("1. The Dataset at a Glance")
-    with st.expander("💡 What does this mean?", expanded=False):
-        st.markdown("""
-        Before training any model, we need data, lots of it. Think of data as the textbook the model studies
-        from. The more examples it sees, the smarter it gets.
-
-        We split our data into two groups:
-        - **Training set** — the textbook the model learns from (80% of all data)
-        - **Test set** — a surprise exam with data the model has *never* seen before (20%)
-
-        This split is critical: it tells us whether the model actually *learned* to predict compensation,
-        or just memorised the textbook.
-        """)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Records", f"{int(report_data.get('total_records', 799232)):,}")
-    c2.metric("Training Records", f"{int(report_data.get('train_records', 639385)):,}")
-    c3.metric("Test Records", f"{int(report_data.get('test_records', 159847)):,}")
-    c4.metric("Features Used", report_data.get('n_features', '19'))
-
-    st.divider()
-
-    # ── Section 2: What We Were Predicting ───────────────────────────────────
-    st.subheader("2. What We Were Predicting")
-    with st.expander("💡 What does this mean?", expanded=False):
-        st.markdown("""
-        The goal of this model is to predict **total compensation** ; the full dollar amount an SF city
-        employee earns, including base salary, overtime, benefits, retirement, and more.
-
-        Before building the model, it helps to understand the *shape* of what we're predicting:
-        - **Mean vs Median**: If the mean and median are close, pay is fairly evenly spread.
-          Here they're nearly identical, meaning most employees cluster around ~$113K.
-        - **Standard Deviation (Std Dev)**: How spread out the values are. A $75K std dev means
-          salaries vary a lot — some employees earn very little, others earn much more.
-        - **Range**: The gap between the lowest and highest earners shows us the full spectrum.
-        """)
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Mean Compensation", report_data.get('mean_comp', '$113,427'))
-    c2.metric("Median Compensation", report_data.get('median_comp', '$113,122'))
-    c3.metric("Minimum", report_data.get('min_comp', '$0.01'))
-    c4.metric("Maximum", report_data.get('max_comp', '$807,625'))
-    c5.metric("Std Deviation", report_data.get('std_comp', '$75,068'))
-
-    st.divider()
-
-    # ── Section 3: Models We Tested ──────────────────────────────────────────
-    st.subheader("3. Models We Tested — The Tournament")
-    with st.expander("💡 What does this mean?", expanded=False):
-        st.markdown("""
-        We didn't just pick one model and hope for the best. We ran a **tournament** — testing four
-        different algorithms and comparing how accurately each one predicted salaries on data it had
-        never seen before.
-
-        Here's a quick plain-English description of each contestant:
-
-        | Model | What it does |
-        |---|---|
-        | **Random Forest** | Builds hundreds of decision trees and combines their answers (like getting opinions from 200 advisors and taking the average). Very powerful for complex data. |
-        | **Gradient Boosting** | Also uses decision trees, but builds them one at a time — each tree learns from the mistakes of the previous one. Like a student who reviews every wrong answer before the next test. |
-        | **Ridge Regression** | A smarter version of drawing a straight line through data. Fast and simple, but struggles when relationships aren't linear. |
-        | **Voting Ensemble** | A combination of Random Forest and Gradient Boosting voting together. Two heads are better than one — but is it better than either alone? |
-
-        **Key metrics explained:**
-        - **R² (R-squared)**: How much of the variation in salary does the model explain? 1.0 = perfect, 0 = no better than guessing the average. Anything above 0.99 is excellent.
-        - **RMSE (Root Mean Squared Error)**: The average dollar amount the model is off by, with larger errors penalised more. Lower = better.
-        - **MAE (Mean Absolute Error)**: The average dollar amount the model is off by, treating all errors equally. Lower = better.
-        - **CV R² (Cross-Validation)**: We tested R² across 5 different random splits of the data to make sure results are consistent, not lucky.
-        """)
-
-    # Model comparison data (from notebook run)
-    models_data = {
-        'Model': ['Random Forest', 'Gradient Boosting', 'Voting Ensemble', 'Ridge Regression'],
-        'Train R²': [0.9999, 0.9992, 0.9997, 0.9697],
-        'Test R²':  [0.9995, 0.9991, 0.9994, 0.9701],
-        'Test RMSE ($)': [1702.91, 2277.42, 1776.34, 12940.82],
-        'Test MAE ($)': [470.75, 1084.80, 732.70, 6984.96],
-        'CV R²': [0.9995, 0.9991, 0.9995, 0.9696],
-    }
-    df_models = pd.DataFrame(models_data)
-
-    # R² comparison chart
-    col_chart1, col_chart2 = st.columns(2)
-
-    with col_chart1:
-        fig_r2 = go.Figure()
-        colors = ['#2ecc71', '#3498db', '#9b59b6', '#e74c3c']
-        colors_light = ['rgba(46,204,113,0.4)', 'rgba(52,152,219,0.4)', 'rgba(155,89,182,0.4)', 'rgba(231,76,60,0.4)']
-        fig_r2.add_trace(go.Bar(
-            x=df_models['Model'], y=df_models['Train R²'],
-            name='Train R²', marker_color=colors_light,
-            text=[f"{v:.4f}" for v in df_models['Train R²']], textposition='outside'
-        ))
-        fig_r2.add_trace(go.Bar(
-            x=df_models['Model'], y=df_models['Test R²'],
-            name='Test R²', marker_color=colors,
-            text=[f"{v:.4f}" for v in df_models['Test R²']], textposition='outside'
-        ))
-        fig_r2.update_layout(
-            title='R² Score by Model (higher = better)',
-            barmode='group', yaxis=dict(range=[0.93, 1.002], title='R² Score'),
-            legend=dict(orientation='h', y=-0.2)
-        )
-        st.plotly_chart(fig_r2, use_container_width=True)
-
-    with col_chart2:
-        fig_rmse = go.Figure()
-        fig_rmse.add_trace(go.Bar(
-            x=df_models['Model'], y=df_models['Test RMSE ($)'],
-            marker_color=colors,
-            text=[f"${v:,.0f}" for v in df_models['Test RMSE ($)']],
-            textposition='outside'
-        ))
-        fig_rmse.update_layout(
-            title='Test RMSE by Model (lower = better)',
-            yaxis=dict(title='RMSE ($)', tickformat='$,.0f'),
-            showlegend=False
-        )
-        st.plotly_chart(fig_rmse, use_container_width=True)
-
-    # MAE comparison
-    fig_mae = go.Figure()
-    fig_mae.add_trace(go.Bar(
-        x=df_models['Model'], y=df_models['Test MAE ($)'],
-        marker_color=colors,
-        text=[f"${v:,.0f}" for v in df_models['Test MAE ($)']],
-        textposition='outside'
-    ))
-    fig_mae.update_layout(
-        title='Test MAE by Model — Average Prediction Error in Dollars (lower = better)',
-        yaxis=dict(title='MAE ($)', tickformat='$,.0f'),
-        showlegend=False
+# ------------------------------------------------------------------ estimator
+with tab_est:
+    st.markdown(
+        "Pick a role. The model estimates total compensation (salary, overtime and benefits) "
+        "**from the role alone**. It never sees what any individual was actually paid."
     )
-    st.plotly_chart(fig_mae, use_container_width=True)
+    combos = T["combos"]
+    left, right = st.columns([1, 2], gap="large")
 
-    # Summary table
-    st.markdown("**Full Results Table**")
-    df_display = df_models.copy()
-    df_display['Test RMSE ($)'] = df_display['Test RMSE ($)'].apply(lambda x: f"${x:,.2f}")
-    df_display['Test MAE ($)'] = df_display['Test MAE ($)'].apply(lambda x: f"${x:,.2f}")
-    df_display['Train R²'] = df_display['Train R²'].apply(lambda x: f"{x:.4f}")
-    df_display['Test R²'] = df_display['Test R²'].apply(lambda x: f"{x:.4f}")
-    df_display['CV R²'] = df_display['CV R²'].apply(lambda x: f"{x:.4f}")
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
+    with left:
+        jobs = combos.groupby(["job_code", "job"])["records"].sum().reset_index()
+        jobs["label"] = jobs["job"] + "  ·  " + jobs["job_code"]
+        default_job = jobs.index[jobs["job_code"] == "1822"]
+        job_label = st.selectbox("Job title", jobs["label"],
+                                 index=int(default_job[0]) if len(default_job) else 0,
+                                 help="Start typing to search 1,000+ job titles")
+        job_code = job_label.rsplit("·", 1)[1].strip()
 
-    st.divider()
+        jc = combos[combos["job_code"] == job_code]
+        depts = jc.groupby(["department_code", "department"])["records"].sum().sort_values(ascending=False)
+        dept_name = st.selectbox("Department", [d for _, d in depts.index])
+        jd = jc[jc["department"] == dept_name]
+        unions = jd.groupby(["union_code", "union"])["records"].sum().sort_values(ascending=False)
+        union_name = st.selectbox("Union", [u for _, u in unions.index])
+        jdu = jd[jd["union"] == union_name].iloc[0]
 
-    # ── Section 4: Why Random Forest Won ─────────────────────────────────────
-    st.subheader("4. Why Random Forest Won")
-    with st.expander("💡 Detailed explanation", expanded=True):
-        st.markdown("""
-        After comparing all four models, **Random Forest** came out on top across every metric. Here's why:
+        years = list(range(LATEST - 2, LATEST + 4))
+        year = st.select_slider("Fiscal year", years, value=LATEST + 1)
+        if year > LATEST:
+            st.caption(f"FY{year} is a projection: city-wide pay is extended on its "
+                       f"{H['first_year']}-{LATEST} trend.")
 
-        **vs Ridge Regression:**
-        Ridge draws a single straight line (or hyperplane) through the data. But the relationship
-        between job type, seniority, department, and compensation is far from linear.
-        Ridge's RMSE of ~$12,941 was almost **8× worse** than Random Forest's ~$1,703.
-        It simply couldn't capture the complex patterns in the data.
+    row = {"job_code": job_code, "job_family": jdu["job_family"],
+           "department_code": jdu["department_code"],
+           "organization_group": jdu["organization_group"],
+           "union_code": jdu["union_code"], "year": year}
+    est = estimate(row)
 
-        **vs Gradient Boosting:**
-        Gradient Boosting is a strong model and came in second. However, on a dataset of 800K records
-        with 19 features, it was slower to train and still had a higher error ($2,277 RMSE vs $1,703).
-        Random Forest parallelises its trees, making it faster and equally accurate.
+    with right:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Estimated total comp", money(est["p50"]))
+        # "\$" stops Streamlit reading a pair of dollar signs as LaTeX
+        m2.metric("Likely range (80%)", f"\\${est['p10'] / 1000:,.0f}k to \\${est['p90'] / 1000:,.0f}k")
+        look = T["lookup"].set_index("job_code")
+        if job_code in look.index:
+            lk = look.loc[job_code]
+            m3.metric(f"Actual median, FY{lk['source_years']}", money(lk["p50"]),
+                      f"{int(lk['n']):,} full-year employees", delta_color="off", delta_arrow="off")
 
-        **vs Voting Ensemble:**
-        The Voting Ensemble combined Random Forest and Gradient Boosting, hoping the two would
-        complement each other. In practice, the Gradient Boosting component slightly dragged down
-        the ensemble (RMSE $1,776 vs $1,703 for Random Forest alone). Sometimes simpler wins.
+            # range chart: actual spread vs estimate band
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                y=["Actual pay<br>(all departments)"], x=[lk["p90"] - lk["p10"]], base=[lk["p10"]],
+                orientation="h", marker=dict(color=GREY, opacity=0.35), width=0.45,
+                name="Actual: 10th-90th percentile",
+                hovertemplate=f"10th pct {money(lk['p10'])}<br>90th pct {money(lk['p90'])}<extra></extra>"))
+            fig.add_trace(go.Bar(
+                y=["Actual pay<br>(all departments)"], x=[lk["p75"] - lk["p25"]], base=[lk["p25"]],
+                orientation="h", marker=dict(color=GREY, opacity=0.8), width=0.45,
+                name="Actual: middle 50%",
+                hovertemplate=f"25th pct {money(lk['p25'])}<br>75th pct {money(lk['p75'])}<extra></extra>"))
+            fig.add_trace(go.Bar(
+                y=["Estimate<br>(this role)"], x=[est["p90"] - est["p10"]], base=[est["p10"]],
+                orientation="h", marker=dict(color=BLUE, opacity=0.35), width=0.45,
+                name="Estimate: 80% range",
+                hovertemplate=f"{money(est['p10'])} to {money(est['p90'])}<extra></extra>"))
+            fig.add_trace(go.Scatter(
+                y=["Estimate<br>(this role)", "Actual pay<br>(all departments)"],
+                x=[est["p50"], lk["p50"]], mode="markers",
+                marker=dict(color=[BLUE, "#52514e"], size=14, symbol="line-ns",
+                            line=dict(width=3, color=[BLUE, "#52514e"])),
+                name="Median", hovertemplate="%{x:$,.0f}<extra></extra>"))
+            fig.update_layout(barmode="overlay", showlegend=True)
+            fig.update_xaxes(tickformat="$,.0f", title=None)
+            st.plotly_chart(style(fig, 260), width="stretch")
 
-        **Random Forest's winning stats:**
-        - **Test R² = 0.9995** — the model explains 99.95% of all salary variation
-        - **Test RMSE = $1,703** — on average, predictions are off by only ~$1,703 (on salaries averaging $113K)
-        - **Test MAE = $471** — the *typical* prediction error is just $471
-        - **CV R² = 0.9995 ± 0.0000** — rock-steady across all 5 validation folds; no signs of overfitting
-        - **Train vs Test gap is tiny** — which confirms the model generalises, not memorises
-        """)
+            comp = pd.DataFrame({
+                "Component": ["Base salary", "Overtime", "Benefits"],
+                "Typical amount": [money(v) for v in
+                                   (lk["median_base"], lk["median_overtime"], lk["median_benefits"])],
+            })
+            st.markdown(f"**What a typical *{lk['job']}* is paid, by component** (medians, FY{lk['source_years']})")
+            st.dataframe(comp, hide_index=True, width="stretch")
 
-    # Gap chart: train vs test R²
-    fig_gap = go.Figure()
-    fig_gap.add_trace(go.Scatter(
-        x=df_models['Model'],
-        y=(df_models['Train R²'] - df_models['Test R²']).round(6),
-        mode='markers+lines+text',
-        marker=dict(size=14, color=colors),
-        text=[(f"{v:.6f}") for v in (df_models['Train R²'] - df_models['Test R²'])],
-        textposition='top center',
-        name='Train-Test R² Gap'
-    ))
-    fig_gap.update_layout(
-        title='Train vs Test R² Gap (closer to 0 = less overfitting)',
-        yaxis=dict(title='R² Gap (Train − Test)', tickformat='.6f'),
-        showlegend=False
+        st.markdown("**What moves this estimate** (compared with the average city role)")
+        eff = est["effects"].rename(index=FEATURE_LABELS)
+        eff = (np.exp(eff) - 1).sort_values()
+        eff = eff[eff.abs() >= 0.005]
+        fig = go.Figure(go.Bar(
+            x=eff.values, y=eff.index, orientation="h",
+            marker_color=[ORANGE if v < 0 else BLUE for v in eff.values],
+            text=[f"{v:+.0%}" for v in eff.values], textposition="outside",
+            hovertemplate="%{y}: %{x:+.1%}<extra></extra>"))
+        fig.update_xaxes(tickformat="+.0%", title=None)
+        st.plotly_chart(style(fig, 60 + 45 * len(eff)), width="stretch")
+        st.caption("Each bar is that input's contribution to the estimate (SHAP-style "
+                   "contributions from the LightGBM model). Job title and union tend to overlap, "
+                   "because many unions cover one occupation group.")
+
+# ------------------------------------------------------------------ insights
+with tab_ins:
+    trend, ot, gaps, detail = T["trend"], T["overtime"], T["gaps"], T["gap_detail"]
+
+    st.subheader("1. Benefits are growing faster than pay")
+    st.markdown(
+        f"Between FY{H['first_year']} and FY{LATEST}, the median full-year employee's base salary "
+        f"grew **{H['cagr_base']:.1%} a year** and benefits grew **{H['cagr_benefits']:.1%} a year**. "
+        "Benefits now make up a growing share of what each role costs the city."
     )
-    st.plotly_chart(fig_gap, use_container_width=True)
-    st.caption("A tiny gap between training and test performance means the model learned *general* patterns, not just the training data. Random Forest shows almost zero gap.")
+    fig = go.Figure()
+    for col, name, color in [("index_base", "Base salary", BLUE),
+                             ("index_benefits", "Benefits", ORANGE),
+                             ("index_total", "Total compensation", AQUA)]:
+        fig.add_trace(go.Scatter(x=trend["year"], y=trend[col], name=name, mode="lines+markers",
+                                 line=dict(color=color, width=2), marker=dict(size=8),
+                                 hovertemplate=f"{name}<br>FY%{{x}}: %{{y:.0f}}<extra></extra>"))
+    fig.update_yaxes(title=f"Index (FY{H['first_year']} = 100)")
+    fig.update_xaxes(dtick=1, title=None)
+    st.plotly_chart(style(fig), width="stretch")
 
-    st.divider()
+    st.subheader("2. Overtime is concentrated in public safety")
+    top = ot.head(3)
+    st.markdown(
+        f"Overtime is {H['overtime_share_latest']:.1%} of the city's cash pay overall. In "
+        + ", ".join(f"**{r.department}** ({r.overtime_share_of_cash_pay:.0%})" for r in top.itertuples())
+        + " it is roughly one dollar in every five or six. "
+        f"City-wide it rose from {H['overtime_share_first']:.1%} in FY{H['first_year']} "
+        f"to a peak of {trend['overtime_share_of_cash_pay'].max():.1%} in "
+        f"FY{int(trend.loc[trend['overtime_share_of_cash_pay'].idxmax(), 'year'])}."
+    )
+    show = ot.head(15).iloc[::-1]
+    fig = go.Figure(go.Bar(
+        x=show["overtime_share_of_cash_pay"], y=show["department"], orientation="h",
+        marker_color=BLUE, customdata=show[["employees", "overtime_total_musd", "share_ot_over_25pct_of_base"]],
+        hovertemplate=("%{y}<br>Overtime share of cash pay: %{x:.1%}<br>"
+                       "Overtime paid: $%{customdata[1]:.1f}M<br>"
+                       "Employees with OT > 25% of base: %{customdata[2]:.0%}<br>"
+                       "Full-year employees: %{customdata[0]:,}<extra></extra>")))
+    fig.update_xaxes(tickformat=".0%", title=f"Overtime as a share of cash pay, FY{LATEST}")
+    st.plotly_chart(style(fig, 480), width="stretch")
 
-    # ── Section 5: Winning Model Deep-Dive ───────────────────────────────────
-    st.subheader("5. The Winning Model — Random Forest Deep Dive")
+    st.subheader("3. Same job, same pay. Almost.")
+    st.markdown(
+        f"{H['jobs_in_multiple_departments']} job titles have at least 15 full-year employees in two or "
+        f"more departments. For the typical one, the median pay gap between departments is only "
+        f"**{H['median_gap_pct_total']:.1%}**. SF pays by job classification, not by department. "
+        "The exceptions are worth a look: some come from overtime, others from different seniority mixes."
+    )
+    options = gaps.head(12)
+    pick = st.selectbox("Job title", options["job"] + "  ·  " + options["job_code"], key="gap_job")
+    code = pick.rsplit("·", 1)[1].strip()
+    d = detail[detail["job_code"] == code].sort_values("median_total")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(y=d["department"], x=d["median_base"], name="Median base salary",
+                         orientation="h", marker_color=BLUE,
+                         hovertemplate="%{y}<br>Base: %{x:$,.0f}<extra></extra>"))
+    fig.add_trace(go.Bar(y=d["department"], x=d["median_total"], name="Median total comp",
+                         orientation="h", marker_color=ORANGE,
+                         customdata=d["n"],
+                         hovertemplate="%{y}<br>Total: %{x:$,.0f}<br>%{customdata} employees<extra></extra>"))
+    fig.update_layout(barmode="group", bargap=0.35, bargroupgap=0.08)
+    fig.update_xaxes(tickformat="$,.0f", title=None)
+    st.plotly_chart(style(fig, 140 + 70 * len(d)), width="stretch")
 
-    col_arch, col_perf = st.columns(2)
+# ------------------------------------------------------------------ model
+with tab_model:
+    ev = meta["eval"]
+    comp = T["comparison"]
+    ours = comp.loc["LightGBM (this model)"]
+    base = comp.loc["Job title median (last year, grown)"]
 
-    with col_arch:
-        st.markdown("##### Architecture Settings")
-        with st.expander("💡 What do these settings mean?", expanded=False):
-            st.markdown("""
-            - **Estimators (200)**: The number of decision trees in the forest. More trees = more stable predictions.
-            - **Max Depth (20)**: How many questions each tree is allowed to ask before making a prediction. Deeper = more detail, but risks memorising noise.
-            - **Min Samples Split (5)**: A branch only splits if there are at least 5 data points. Prevents overly specific tiny branches.
-            - **Min Samples Leaf (2)**: Each leaf (final answer node) must represent at least 2 records. Avoids one-off fringe cases dominating predictions.
-            """)
-        st.markdown("""
-        | Setting | Value |
-        |---|---|
-        | Algorithm | Random Forest Regressor |
-        | Number of Trees | 200 |
-        | Max Tree Depth | 20 |
-        | Min Samples to Split | 5 |
-        | Min Samples per Leaf | 2 |
-        | Training Data Size | 639,385 records |
-        | Validation Strategy | 5-Fold Cross-Validation |
-        """)
+    st.subheader("The question")
+    st.markdown(
+        "Given only what you know about a role (job title, job family, department, organisation "
+        "group, union and year), what total compensation should you expect?\n\n"
+        "The six pay components (salary, overtime, other salary, retirement, health & dental, other "
+        "benefits) add up *exactly* to total compensation, so none of them are used as inputs. "
+        "A model given those columns scores R² ≈ 0.999, but it has only learned addition."
+    )
 
-    with col_perf:
-        st.markdown("##### Final Performance on Unseen Test Data")
-        with st.expander("💡 What do these numbers mean?", expanded=False):
-            st.markdown("""
-            - **R² = 0.9995**: If you picked a random SF employee, the model can explain 99.95% of why their pay is what it is. Only 0.05% of the variation is unexplained.
-            - **RMSE = $1,706**: Think of this as a "typical worst-case error" — most predictions land within ~$1,700 of the real figure.
-            - **MAE = $470**: Half the time the model is off by less than $470 on a salary that averages $113,000 — that's under 0.5% error.
-            - **Cross-Validation R² = 0.9995 ± 0.0000**: Tested on 5 different random data splits. The ± 0.0000 means results were *identical* across all splits — extremely stable.
-            """)
-        r2_val   = float(report_data.get('r2', '0.9995'))
-        rmse_val = report_data.get('rmse', '$1,705.99')
-        mae_val  = report_data.get('mae', '$469.92')
-        cv_val   = report_data.get('cv', '0.9995 ± 0.0000')
+    st.subheader("How it was tested")
+    st.markdown(
+        f"* **Trained on FY{ev['train_years'][0]}-{ev['train_years'][1]}, tested on FY{ev['test_year']}.** "
+        f"A random split would let the same person appear in training and test across years.\n"
+        f"* **Full-year employees only** ({ev['n_train']:,} training rows, {ev['n_test']:,} test rows). "
+        "Part-year and part-time records are kept in the data but flagged.\n"
+        "* **Pay level and pay structure are modelled separately.** A city-wide pay index captures "
+        "inflation and pay rises (projected forward on its trend). A LightGBM model learns each "
+        "role's pay relative to that index.\n"
+        "* **Ranges come from quantile models** (10th and 90th percentile), calibrated on the year "
+        "before the test year so the band really covers about 80% of people."
+    )
 
-        st.metric("R² Score", r2_val, help="Closer to 1.0 is better. Explains % of salary variation.")
-        st.metric("Test RMSE", rmse_val, help="Average prediction error (larger errors penalised more)")
-        st.metric("Test MAE", mae_val, help="Typical prediction error in dollars")
-        st.metric("Cross-Validation R²", cv_val, help="Consistency across 5 data splits")
+    st.subheader(f"Results on FY{ev['test_year']} (never seen in training)")
+    show = comp.copy()
+    show.columns = ["R²", "Mean abs. error", "Median abs. % error", "Within 10%", "80% range covers"]
+    fmt = {"R²": "{:.3f}", "Mean abs. error": "${:,.0f}", "Median abs. % error": "{:.1%}",
+           "Within 10%": "{:.0%}", "80% range covers": "{:.0%}"}
+    for col, f in fmt.items():
+        show[col] = show[col].map(lambda v, f=f: "n/a" if pd.isna(v) else f.format(v))
+    st.dataframe(show, width="stretch")
+    st.markdown(
+        f"**The honest takeaway:** the role explains about **{ours['R2']:.0%}** of the variation in pay. "
+        f"A simple lookup of last year's median for each job title does almost exactly as well "
+        f"(R² {base['R2']:.3f} vs {ours['R2']:.3f}). That is a finding in itself: SF pay is set by "
+        "job classification, and most of what's left is individual (overtime hours, seniority steps, "
+        "time on leave), which no role-level model can know.\n\n"
+        f"What the model adds is a **calibrated range** ({ours['coverage_80']:.0%} of FY{ev['test_year']} "
+        "employees fell inside it), estimates for job, department and union combinations, and a "
+        "breakdown of what drives each estimate."
+    )
 
-    st.divider()
+    st.subheader("What drives pay")
+    imp = T["importance"].iloc[::-1]
+    fig = go.Figure(go.Bar(x=imp["share"], y=imp["feature"], orientation="h", marker_color=BLUE,
+                           hovertemplate="%{y}: %{x:.0%} of total effect<extra></extra>"))
+    fig.update_xaxes(tickformat=".0%", title="Share of the model's total effect (mean |contribution|)")
+    st.plotly_chart(style(fig, 300), width="stretch")
 
-    # ── Section 6: What Drives the Predictions ───────────────────────────────
-    st.subheader("6. What Drives the Predictions? — Feature Importance")
-    with st.expander("💡 What does this mean?", expanded=False):
-        st.markdown("""
-        After training, the Random Forest can tell us which pieces of information it relied on
-        *most* when making predictions. This is called **feature importance**.
+    st.subheader("Limitations")
+    inc = ", ".join(f"FY{y}" for y in H["incomplete_years"]) or "none"
+    st.markdown(
+        f"* **Incomplete years excluded:** {inc}. In the source export, health & dental was $0 for "
+        "about 93% of FY2022 records, which would make FY2022 look like a pay cut.\n"
+        "* **No hours worked.** \"Full year\" is a proxy: base salary at least half the job's median "
+        "that year, and at least $15k.\n"
+        "* **No seniority, tenure or individual history.** That is deliberate (the estimate is for a "
+        "role, not a person) and it is the main reason R² stops near 0.78.\n"
+        "* **Projections assume the historical pay trend continues.**"
+    )
 
-        A score of 1.0 means that feature alone explains everything. A score of 0.0 means the
-        model ignored it completely.
-
-        Think of it like asking a recruiter: *"When you figure out someone's salary, what matters most?"*
-        Their answer here is **salary components** (the sum of base pay + overtime + other salaries)
-        — which makes intuitive sense, since total compensation is built directly from those parts.
-        """)
-
-    if feature_lines:
-        feat_df = pd.DataFrame(feature_lines, columns=['Feature', 'Importance'])
-        feat_df = feat_df.sort_values('Importance', ascending=True)
-
-        # Clean feature names for display
-        name_map = {
-            'salary_component': 'Salary Component (base+OT+other)',
-            'other_benefits': 'Other Benefits',
-            'benefits_component': 'Benefits Component (retirement+health+other)',
-            'salaries': 'Base Salaries',
-            'retirement': 'Retirement',
-            'health_and_dental': 'Health & Dental',
-            'other_salaries': 'Other Salaries',
-            'benefits_salary_ratio': 'Benefits-to-Salary Ratio',
-            'overtime_salary_ratio': 'Overtime-to-Salary Ratio',
-            'overtime': 'Overtime',
-        }
-        feat_df['Feature'] = feat_df['Feature'].map(name_map).fillna(feat_df['Feature'])
-
-        fig_feat = px.bar(
-            feat_df, x='Importance', y='Feature',
-            orientation='h',
-            title='Feature Importance — What the Model Relies On Most',
-            color='Importance',
-            color_continuous_scale='Blues',
-            text=feat_df['Importance'].apply(lambda x: f"{x:.4f}")
-        )
-        fig_feat.update_traces(textposition='outside')
-        fig_feat.update_layout(coloraxis_showscale=False, xaxis_title='Importance Score (0–1)')
-        st.plotly_chart(fig_feat, use_container_width=True)
-
-        # Breakdown insight
-        top_feat = feat_df.sort_values('Importance', ascending=False).iloc[0]
-        st.info(f"**Top driver:** *{top_feat['Feature']}* accounts for **{top_feat['Importance']:.1%}** of the model's decision-making. This is the computed total of base salary + overtime + other salary components — the single biggest predictor of what an employee takes home.")
-
-# ==================== PAGE 4: ABOUT ====================
-elif page == "ℹ️ About":
-    st.header("About This Application")
-    
-    st.markdown("""
-    ### San Francisco Employee Compensation Prediction
-    
-    This application predicts total employee compensation for San Francisco city employees 
-    based on their job role and organizational attributes.
-    
-    #### Features
-    - **Real-time Predictions**: Enter job details and get instant compensation estimates
-    - **Data-Driven Insights**: Visualizations of compensation across different dimensions
-    - **Model Transparency**: View model performance and feature importance
-    - **Historical Comparison**: Compare predictions with historical compensation data
-    
-    #### Data Source
-    The model is trained on cleaned San Francisco employee compensation data including:
-    - Base salaries
-    - Overtime pay
-    - Retirement contributions
-    - Health and dental benefits
-    - Other benefits
-    
-    #### How It Works
-    1. **Data Preprocessing**: Categorical encoding and feature normalization
-    2. **Feature Engineering**: Creation of derived features like compensation ratios
-    3. **Model Training**: Random Forest algorithm trained on historical data
-    4. **Prediction**: User inputs are processed and fed to the trained model
-    
-    #### Model Performance
-    - **R² Score**: Explains the variance in compensation predictions
-    - **RMSE**: Measures average prediction error
-    - **Cross-Validation**: Ensures model generalization
-    
-    #### Technology Stack
-    - **Python 3.9+**
-    - **Streamlit**: Web framework
-    - **Scikit-learn**: Machine learning
-    - **Pandas**: Data manipulation
-    - **Plotly**: Interactive visualizations
-    
-    #### Files Generated
-    - `best_model.pkl`: Trained Random Forest model
-    - `scaler.pkl`: Feature scaler
-    - `label_encoders.pkl`: Categorical encoders
-    - `feature_names.pkl`: Feature names used in training
-    - `model_summary_report.txt`: Detailed model report
-    
-    ---
-    **Version**: 2.0 (Improved version)
-    **Last Updated**: March 2026
-    """)
-    
-    st.divider()
-    
-    st.subheader("Data Statistics")
-    
-    col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
-    
-    with col_stats1:
-        st.metric("Total Records", f"{len(df_raw):,}")
-    
-    with col_stats2:
-        st.metric("Avg Compensation", f"${df_raw['total_compensation'].mean():,.0f}")
-    
-    with col_stats3:
-        st.metric("Unique Jobs", df_raw['job'].nunique())
-    
-    with col_stats4:
-        st.metric("Unique Departments", df_raw['department'].nunique())
-
-# ==================== FOOTER ====================
 st.divider()
-st.markdown("""
-<div style='text-align: center; color: gray; font-size: 12px;'>
-    San Francisco Employee Compensation Prediction Tool | Powered by Random Forest ML model, done by Mary Kinya!
-</div>
-""", unsafe_allow_html=True)
+st.caption(
+    "Data: [DataSF Employee Compensation](https://data.sfgov.org/d/88g8-5mnd) · "
+    "Built by [Mary Kinya](https://marykinya.com) · "
+    "[Code on GitHub](https://github.com/marykinya/SanFran-Staff-Compensation)"
+)

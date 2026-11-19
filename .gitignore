@@ -1,43 +1,22 @@
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
-
-# Jupyter Notebook
 .ipynb_checkpoints/
-*.ipynb_checkpoints
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Large data files
-*.zip
-
-# Large model files (uncomment below if models exceed ~100MB)
-# models/best_model.pkl
-# *.pkl
-
-# Raw data files (exclude large source CSVs)
-data/Employee_Compensation.csv
-data/new_union.csv
-data/new_jobs.csv
-
-# Streamlit cache
-.streamlit/
-
-# Dependencies
+# Environments
 .venv/
 venv/
 env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Data: download from DataSF (see README). The app only needs app_data/.
+data/*.csv
+data/processed/
+
+# Streamlit local secrets
+.streamlit/secrets.toml

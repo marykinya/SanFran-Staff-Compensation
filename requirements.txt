@@ -1,10 +1,6 @@
-numpy
-pandas
-plotly
-scikit-learn
-scipy
-seaborn
-streamlit>=1.25.0
-altair>=5
-joblib
-xgboost
+# App (Streamlit Community Cloud installs these)
+streamlit==1.65.0
+pandas==2.3.3
+numpy==2.2.6
+lightgbm==4.7.0
+plotly==7.1.0

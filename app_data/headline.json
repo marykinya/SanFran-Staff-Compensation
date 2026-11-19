@@ -1,0 +1,49 @@
+{
+  "latest_complete_year": 2021,
+  "first_year": 2013,
+  "incomplete_years": [
+    2022
+  ],
+  "full_year_employees_latest": 33411,
+  "median_total_latest": 151772.96000000002,
+  "median_total_first": 116030.91,
+  "growth_total_pct": 0.30803903890782225,
+  "cagr_total": 0.034135836474748604,
+  "cagr_base": 0.032769548778433855,
+  "cagr_benefits": 0.04003478741012456,
+  "overtime_share_latest": 0.06755611332876385,
+  "overtime_share_first": 0.059988781544174793,
+  "share_with_overtime_latest": 0.5713387806411062,
+  "top_ot_departments": [
+    {
+      "department": "Sheriff",
+      "overtime_share_of_cash_pay": 0.19401477322759034
+    },
+    {
+      "department": "Fire Department",
+      "overtime_share_of_cash_pay": 0.18234246576172128
+    },
+    {
+      "department": "Dept of Emergency Management",
+      "overtime_share_of_cash_pay": 0.16270393752461526
+    }
+  ],
+  "top_gap_job": [
+    {
+      "job_code": "8177",
+      "job": "Attorney (Civil/Criminal)",
+      "departments": 3,
+      "employees": 328,
+      "low_total": 218345.375,
+      "high_total": 294302.33,
+      "low_base": 155055.20500000002,
+      "high_base": 219559.02,
+      "total_gap": 75956.95500000002,
+      "total_gap_pct": 0.3478752641314249,
+      "base_gap_pct": 0.4160054801127119
+    }
+  ],
+  "jobs_in_multiple_departments": 45,
+  "median_gap_pct_total": 0.027236246566576045,
+  "median_gap_pct_base": 0.01951612176270335
+}
