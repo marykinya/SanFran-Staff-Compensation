@@ -1,7 +1,7 @@
-"""San Francisco public pay explorer.
+"""San Francisco public pay: a scrolling story.
 
-Estimates what a City and County of San Francisco role pays, from the role alone,
-and explores how city pay has changed. Data: DataSF Employee Compensation.
+Walks through how City and County of San Francisco pay has changed, then lets the
+reader estimate what a role pays. Data: DataSF Employee Compensation.
 """
 import json
 from pathlib import Path
@@ -17,14 +17,31 @@ APP_DATA = ROOT / "app_data"
 MODELS = ROOT / "models"
 REPORTS = ROOT / "reports"
 
-BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
-GREY = "#8a8985"
+BLUE, ORANGE = "#2a78d6", "#eb6834"
+GREY, LIGHT_GREY, INK = "#8a8985", "#d9d7d0", "#1f1e1c"
 FEATURE_LABELS = {
     "job_code": "Job title", "job_family": "Job family", "department_code": "Department",
     "organization_group": "Organisation group", "union_code": "Union", "year": "Year",
 }
 
-st.set_page_config(page_title="SF Public Pay Explorer", page_icon="💼", layout="wide")
+st.set_page_config(page_title="SF Public Pay", page_icon="💼", layout="centered")
+
+st.markdown(
+    """
+    <style>
+      .block-container {max-width: 760px; padding-top: 3rem;}
+      .kicker {color: #2a78d6; font-size: 0.8rem; font-weight: 700;
+               letter-spacing: 0.12em; text-transform: uppercase; margin: 0;}
+      .big {font-size: clamp(2.6rem, 9vw, 4.2rem); font-weight: 800; line-height: 1.05;
+            color: #1f1e1c; margin: 0.2rem 0 0.4rem;}
+      .lede {font-size: 1.2rem; line-height: 1.6; color: #3d3c39;}
+      .chapter {margin-top: 5.5rem;}
+      .note {color: #6b6a66; font-size: 0.9rem;}
+      .scroll-hint {color: #8a8985; text-align: center; margin-top: 3rem; font-size: 0.9rem;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ------------------------------------------------------------------ loading
@@ -55,7 +72,7 @@ def load_tables():
 models, meta = load_models()
 T = load_tables()
 H = T["headline"]
-LATEST = H["latest_complete_year"]
+FIRST, LATEST = H["first_year"], H["latest_complete_year"]
 
 
 def pay_index(year: int) -> float:
@@ -79,234 +96,232 @@ def estimate(row: dict) -> dict:
     contrib = models["p50"].predict(X, pred_contrib=True)[0]
     effects = pd.Series(contrib[:-1], index=meta["features"])
     return {"p10": level * np.exp(lo), "p50": level * np.exp(mid), "p90": level * np.exp(hi),
-            "level": level, "base": contrib[-1], "effects": effects}
+            "effects": effects}
 
 
 def money(x: float) -> str:
     return f"${x:,.0f}"
 
 
-def style(fig: go.Figure, height: int = 380) -> go.Figure:
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=30, b=10),
-                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", y=1.08, x=0), hoverlabel=dict(namelength=-1))
-    fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(gridcolor="rgba(128,128,128,0.15)", zeroline=False)
+def k(x: float) -> str:
+    return f"${x / 1000:,.0f}k"
+
+
+def style(fig: go.Figure, height: int = 360) -> go.Figure:
+    fig.update_layout(height=height, margin=dict(l=0, r=0, t=10, b=0), showlegend=False,
+                      template="plotly_white", font=dict(color=INK, size=13),
+                      plot_bgcolor="white", paper_bgcolor="white",
+                      hoverlabel=dict(namelength=-1, bgcolor="white"))
+    fig.update_xaxes(showgrid=False, linecolor=LIGHT_GREY)
+    fig.update_yaxes(gridcolor="#eeede8", zeroline=False)
     return fig
 
 
-# ------------------------------------------------------------------ header
-st.title("San Francisco Public Pay Explorer")
-st.caption(
-    f"What does a City of San Francisco job really pay? Built on {H['first_year']}-{LATEST} "
-    "fiscal-year records from DataSF's Employee Compensation dataset."
+def chart(fig: go.Figure, height: int = 360):
+    st.plotly_chart(style(fig, height), width="stretch", config={"displayModeBar": False})
+
+
+def chapter(kicker: str, big: str, lede: str):
+    st.markdown(
+        f'<div class="chapter"><p class="kicker">{kicker}</p>'
+        f'<p class="big">{big}</p><p class="lede">{lede}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+trend, ot, gaps, detail = T["trend"], T["overtime"], T["gaps"], T["gap_detail"]
+
+# ------------------------------------------------------------------ opening
+st.markdown('<p class="kicker">San Francisco public pay</p>', unsafe_allow_html=True)
+st.markdown("# What does a city job in San Francisco really pay?")
+st.markdown(
+    f'<p class="lede">The typical full-year city employee cost '
+    f'<b>{money(H["median_total_latest"])}</b> in FY{LATEST}, counting salary, overtime and benefits. '
+    f'That is <b>{H["growth_total_pct"]:.0%} more</b> than in FY{FIRST}. '
+    f"Here's where that money goes, and what it means for a single role.</p>",
+    unsafe_allow_html=True,
+)
+st.markdown('<p class="scroll-hint">Scroll to read ↓</p>', unsafe_allow_html=True)
+
+# ------------------------------------------------------------------ 1. benefits
+chapter(
+    "Chapter 1 · Benefits",
+    f"{H['cagr_benefits']:.1%} a year",
+    f"That's how fast benefits grew for the typical employee. Base salary grew "
+    f"{H['cagr_base']:.1%} a year. The gap looks small, but it compounds: benefits now "
+    f"take a bigger share of what each job costs the city.",
+)
+fig = go.Figure()
+for col, name, color in [("index_base", "Base salary", GREY), ("index_benefits", "Benefits", ORANGE)]:
+    fig.add_trace(go.Scatter(x=trend["year"], y=trend[col], name=name, mode="lines",
+                             line=dict(color=color, width=3),
+                             hovertemplate=f"{name}<br>FY%{{x}}: %{{y:.0f}}<extra></extra>"))
+    last = trend.iloc[-1]
+    fig.add_annotation(x=last["year"], y=last[col], text=f"<b>{name}</b><br>+{last[col] - 100:.0f}%",
+                       showarrow=False, xanchor="left", xshift=8, font=dict(color=color))
+fig.update_xaxes(dtick=2, range=[FIRST - 0.3, LATEST + 1.6])
+fig.update_yaxes(title=f"Growth since FY{FIRST} (FY{FIRST} = 100)")
+chart(fig)
+
+# ------------------------------------------------------------------ 2. overtime
+top3 = ot.head(3)
+chapter(
+    "Chapter 2 · Overtime",
+    "1 in 5 dollars",
+    f"Most city workers ({H['share_with_overtime_latest']:.0%}) earn some overtime, but it adds up to "
+    f"only {H['overtime_share_latest']:.1%} of cash pay city-wide. Public safety is different. At the "
+    + ", ".join(f"<b>{d}</b>" for d in top3["department"][:2])
+    + f" and <b>{top3['department'].iloc[2]}</b>, one dollar in every five or six is overtime.",
+)
+show = ot.head(10).iloc[::-1]
+colors = [ORANGE if d in set(top3["department"]) else LIGHT_GREY for d in show["department"]]
+fig = go.Figure(go.Bar(
+    x=show["overtime_share_of_cash_pay"], y=show["department"], orientation="h", marker_color=colors,
+    text=[f"{v:.0%}" for v in show["overtime_share_of_cash_pay"]], textposition="outside",
+    customdata=show[["overtime_total_musd"]],
+    hovertemplate="%{y}<br>Overtime: %{x:.1%} of cash pay ($%{customdata[0]:.0f}M)<extra></extra>"))
+fig.update_xaxes(visible=False, range=[0, ot["overtime_share_of_cash_pay"].max() * 1.18])
+fig.update_yaxes(showgrid=False)
+chart(fig, 400)
+st.markdown(f'<p class="note">Overtime as a share of cash pay, top 10 departments, FY{LATEST}.</p>',
+            unsafe_allow_html=True)
+
+# ------------------------------------------------------------------ 3. same job
+tg = H["top_gap_job"][0]
+chapter(
+    "Chapter 3 · Same job, same pay",
+    f"{H['median_gap_pct_total']:.1%}",
+    f"That's the typical pay gap for the same job title across different departments. "
+    f"San Francisco pays by job classification, not by department. But there are exceptions. "
+    f"A <b>{tg['job']}</b> earns {k(tg['low_total'])} to {k(tg['high_total'])} depending on "
+    f"where they work.",
+)
+options = gaps.head(12)
+labels = (options["job"] + "  ·  " + options["job_code"]).tolist()
+pick = st.selectbox("Explore another job title", labels, key="gap_job")
+code = pick.rsplit("·", 1)[1].strip()
+d = detail[detail["job_code"] == code].sort_values("median_total")
+fig = go.Figure(go.Bar(
+    y=d["department"], x=d["median_total"], orientation="h",
+    marker_color=[ORANGE if i == len(d) - 1 else LIGHT_GREY for i in range(len(d))],
+    text=[k(v) for v in d["median_total"]], textposition="outside", customdata=d["n"],
+    hovertemplate="%{y}<br>Median total comp: %{x:$,.0f}<br>%{customdata} employees<extra></extra>"))
+fig.update_xaxes(visible=False, range=[0, d["median_total"].max() * 1.15])
+fig.update_yaxes(showgrid=False)
+chart(fig, 90 + 55 * len(d))
+st.markdown('<p class="note">Median total compensation by department.</p>', unsafe_allow_html=True)
+
+# ------------------------------------------------------------------ 4. estimator
+chapter(
+    "Your turn",
+    "What would a role pay?",
+    "Pick a job, department and union. A model trained on city pay records estimates total "
+    "compensation for that role. It works from the role alone, never from any one person's pay.",
+)
+combos = T["combos"]
+jobs = combos.groupby(["job_code", "job"])["records"].sum().reset_index()
+jobs["label"] = jobs["job"] + "  ·  " + jobs["job_code"]
+default_job = jobs.index[jobs["job_code"] == "1822"]
+job_label = st.selectbox("Job title", jobs["label"],
+                         index=int(default_job[0]) if len(default_job) else 0,
+                         help="Start typing to search 1,000+ job titles")
+job_code = job_label.rsplit("·", 1)[1].strip()
+
+jc = combos[combos["job_code"] == job_code]
+c1, c2 = st.columns(2)
+depts = jc.groupby(["department_code", "department"])["records"].sum().sort_values(ascending=False)
+dept_name = c1.selectbox("Department", [dn for _, dn in depts.index])
+jd = jc[jc["department"] == dept_name]
+unions = jd.groupby(["union_code", "union"])["records"].sum().sort_values(ascending=False)
+union_name = c2.selectbox("Union", [u for _, u in unions.index])
+jdu = jd[jd["union"] == union_name].iloc[0]
+
+year = st.select_slider("Fiscal year", list(range(LATEST - 2, LATEST + 4)), value=LATEST + 1)
+
+est = estimate({"job_code": job_code, "job_family": jdu["job_family"],
+                "department_code": jdu["department_code"],
+                "organization_group": jdu["organization_group"],
+                "union_code": jdu["union_code"], "year": year})
+
+projection = f" (a projection, extending the FY{FIRST}-{LATEST} trend)" if year > LATEST else ""
+st.markdown(
+    f'<p class="big" style="margin-top:2rem">{money(est["p50"])}</p>'
+    f'<p class="lede">Estimated total compensation in FY{year}{projection}. '
+    f'Most people in this role (8 in 10) would fall between <b>{k(est["p10"])}</b> and '
+    f'<b>{k(est["p90"])}</b>.</p>',
+    unsafe_allow_html=True,
 )
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric(f"Median total comp, FY{LATEST}", money(H["median_total_latest"]),
-          f"+{H['growth_total_pct']:.0%} since FY{H['first_year']}")
-c2.metric("Benefits growth per year", f"{H['cagr_benefits']:.1%}",
-          f"vs {H['cagr_base']:.1%} for base pay", delta_color="off", delta_arrow="off")
-c3.metric("Employees earning overtime", f"{H['share_with_overtime_latest']:.0%}",
-          f"overtime = {H['overtime_share_latest']:.1%} of cash pay", delta_color="off", delta_arrow="off")
-c4.metric("Full-year employees", f"{H['full_year_employees_latest']:,}", f"FY{LATEST}", delta_color="off", delta_arrow="off")
-
-tab_est, tab_ins, tab_model = st.tabs(["🔮 Pay estimator", "📊 Insights", "🧪 How the model works"])
-
-# ------------------------------------------------------------------ estimator
-with tab_est:
+look = T["lookup"].set_index("job_code")
+if job_code in look.index:
+    lk = look.loc[job_code]
+    fig = go.Figure()
+    rows = [("This estimate", est["p10"], est["p90"], est["p50"], BLUE),
+            (f"Actual, FY{lk['source_years']}", lk["p10"], lk["p90"], lk["p50"], GREY)]
+    for name, lo, hi, mid, color in rows:
+        fig.add_trace(go.Scatter(x=[lo, hi], y=[name, name], mode="lines",
+                                 line=dict(color=color, width=14), opacity=0.3, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=[mid], y=[name], mode="markers+text", text=[k(mid)],
+                                 textposition="top center", marker=dict(color=color, size=16),
+                                 hovertemplate=f"{name}<br>Median %{{x:$,.0f}}<br>"
+                                               f"Range {money(lo)} to {money(hi)}<extra></extra>"))
+    fig.update_xaxes(tickformat="$,.0s")
+    fig.update_yaxes(showgrid=False, autorange="reversed")
+    chart(fig, 190)
     st.markdown(
-        "Pick a role. The model estimates total compensation (salary, overtime and benefits) "
-        "**from the role alone**. It never sees what any individual was actually paid."
+        f'<p class="note">Shaded bars show the range for 8 in 10 people. "Actual" covers '
+        f"{int(lk['n']):,} full-year {lk['job']} employees across all departments.</p>",
+        unsafe_allow_html=True,
     )
-    combos = T["combos"]
-    left, right = st.columns([1, 2], gap="large")
 
-    with left:
-        jobs = combos.groupby(["job_code", "job"])["records"].sum().reset_index()
-        jobs["label"] = jobs["job"] + "  ·  " + jobs["job_code"]
-        default_job = jobs.index[jobs["job_code"] == "1822"]
-        job_label = st.selectbox("Job title", jobs["label"],
-                                 index=int(default_job[0]) if len(default_job) else 0,
-                                 help="Start typing to search 1,000+ job titles")
-        job_code = job_label.rsplit("·", 1)[1].strip()
+    with st.expander("How this pay breaks down, and what moves the estimate"):
+        st.markdown(f"**A typical {lk['job']}** (medians, FY{lk['source_years']})")
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Base salary", money(lk["median_base"]))
+        b2.metric("Overtime", money(lk["median_overtime"]))
+        b3.metric("Benefits", money(lk["median_benefits"]))
 
-        jc = combos[combos["job_code"] == job_code]
-        depts = jc.groupby(["department_code", "department"])["records"].sum().sort_values(ascending=False)
-        dept_name = st.selectbox("Department", [d for _, d in depts.index])
-        jd = jc[jc["department"] == dept_name]
-        unions = jd.groupby(["union_code", "union"])["records"].sum().sort_values(ascending=False)
-        union_name = st.selectbox("Union", [u for _, u in unions.index])
-        jdu = jd[jd["union"] == union_name].iloc[0]
-
-        years = list(range(LATEST - 2, LATEST + 4))
-        year = st.select_slider("Fiscal year", years, value=LATEST + 1)
-        if year > LATEST:
-            st.caption(f"FY{year} is a projection: city-wide pay is extended on its "
-                       f"{H['first_year']}-{LATEST} trend.")
-
-    row = {"job_code": job_code, "job_family": jdu["job_family"],
-           "department_code": jdu["department_code"],
-           "organization_group": jdu["organization_group"],
-           "union_code": jdu["union_code"], "year": year}
-    est = estimate(row)
-
-    with right:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Estimated total comp", money(est["p50"]))
-        # "\$" stops Streamlit reading a pair of dollar signs as LaTeX
-        m2.metric("Likely range (80%)", f"\\${est['p10'] / 1000:,.0f}k to \\${est['p90'] / 1000:,.0f}k")
-        look = T["lookup"].set_index("job_code")
-        if job_code in look.index:
-            lk = look.loc[job_code]
-            m3.metric(f"Actual median, FY{lk['source_years']}", money(lk["p50"]),
-                      f"{int(lk['n']):,} full-year employees", delta_color="off", delta_arrow="off")
-
-            # range chart: actual spread vs estimate band
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                y=["Actual pay<br>(all departments)"], x=[lk["p90"] - lk["p10"]], base=[lk["p10"]],
-                orientation="h", marker=dict(color=GREY, opacity=0.35), width=0.45,
-                name="Actual: 10th-90th percentile",
-                hovertemplate=f"10th pct {money(lk['p10'])}<br>90th pct {money(lk['p90'])}<extra></extra>"))
-            fig.add_trace(go.Bar(
-                y=["Actual pay<br>(all departments)"], x=[lk["p75"] - lk["p25"]], base=[lk["p25"]],
-                orientation="h", marker=dict(color=GREY, opacity=0.8), width=0.45,
-                name="Actual: middle 50%",
-                hovertemplate=f"25th pct {money(lk['p25'])}<br>75th pct {money(lk['p75'])}<extra></extra>"))
-            fig.add_trace(go.Bar(
-                y=["Estimate<br>(this role)"], x=[est["p90"] - est["p10"]], base=[est["p10"]],
-                orientation="h", marker=dict(color=BLUE, opacity=0.35), width=0.45,
-                name="Estimate: 80% range",
-                hovertemplate=f"{money(est['p10'])} to {money(est['p90'])}<extra></extra>"))
-            fig.add_trace(go.Scatter(
-                y=["Estimate<br>(this role)", "Actual pay<br>(all departments)"],
-                x=[est["p50"], lk["p50"]], mode="markers",
-                marker=dict(color=[BLUE, "#52514e"], size=14, symbol="line-ns",
-                            line=dict(width=3, color=[BLUE, "#52514e"])),
-                name="Median", hovertemplate="%{x:$,.0f}<extra></extra>"))
-            fig.update_layout(barmode="overlay", showlegend=True)
-            fig.update_xaxes(tickformat="$,.0f", title=None)
-            st.plotly_chart(style(fig, 260), width="stretch")
-
-            comp = pd.DataFrame({
-                "Component": ["Base salary", "Overtime", "Benefits"],
-                "Typical amount": [money(v) for v in
-                                   (lk["median_base"], lk["median_overtime"], lk["median_benefits"])],
-            })
-            st.markdown(f"**What a typical *{lk['job']}* is paid, by component** (medians, FY{lk['source_years']})")
-            st.dataframe(comp, hide_index=True, width="stretch")
-
-        st.markdown("**What moves this estimate** (compared with the average city role)")
-        eff = est["effects"].rename(index=FEATURE_LABELS)
-        eff = (np.exp(eff) - 1).sort_values()
+        st.markdown("**What moves this estimate**, compared with the average city role")
+        eff = (np.exp(est["effects"].rename(index=FEATURE_LABELS)) - 1).sort_values()
         eff = eff[eff.abs() >= 0.005]
         fig = go.Figure(go.Bar(
             x=eff.values, y=eff.index, orientation="h",
             marker_color=[ORANGE if v < 0 else BLUE for v in eff.values],
             text=[f"{v:+.0%}" for v in eff.values], textposition="outside",
             hovertemplate="%{y}: %{x:+.1%}<extra></extra>"))
-        fig.update_xaxes(tickformat="+.0%", title=None)
-        st.plotly_chart(style(fig, 60 + 45 * len(eff)), width="stretch")
-        st.caption("Each bar is that input's contribution to the estimate (SHAP-style "
-                   "contributions from the LightGBM model). Job title and union tend to overlap, "
-                   "because many unions cover one occupation group.")
+        fig.update_xaxes(tickformat="+.0%")
+        fig.update_yaxes(showgrid=False)
+        chart(fig, 60 + 45 * len(eff))
+        st.caption("Blue pushes the estimate up, orange pulls it down. Job title and union often "
+                   "overlap, because many unions cover one occupation group.")
 
-# ------------------------------------------------------------------ insights
-with tab_ins:
-    trend, ot, gaps, detail = T["trend"], T["overtime"], T["gaps"], T["gap_detail"]
+# ------------------------------------------------------------------ 5. fine print
+ev = meta["eval"]
+comp = T["comparison"]
+ours = comp.loc["LightGBM (this model)"]
+base = comp.loc["Job title median (last year, grown)"]
 
-    st.subheader("1. Benefits are growing faster than pay")
+chapter(
+    "The fine print",
+    f"{ours['R2']:.0%}",
+    f"That's how much of the variation in pay the role explains. The rest is personal: "
+    f"overtime hours, seniority steps, time on leave. No role-level model can know those.",
+)
+with st.expander("How the model was built and tested"):
     st.markdown(
-        f"Between FY{H['first_year']} and FY{LATEST}, the median full-year employee's base salary "
-        f"grew **{H['cagr_base']:.1%} a year** and benefits grew **{H['cagr_benefits']:.1%} a year**. "
-        "Benefits now make up a growing share of what each role costs the city."
+        f"* **Inputs:** job title, job family, department, organisation group, union and year. "
+        "Pay components are never used as inputs, because they add up exactly to the answer.\n"
+        f"* **Tested on the future:** trained on FY{ev['train_years'][0]}-{ev['train_years'][1]}, "
+        f"tested on FY{ev['test_year']} ({ev['n_test']:,} full-year employees it never saw).\n"
+        "* **Two parts:** a city-wide pay index tracks pay rises over time, and a LightGBM model "
+        "learns each role's pay relative to it.\n"
+        f"* **Honest ranges:** {ours['coverage_80']:.0%} of FY{ev['test_year']} employees fell inside "
+        "the 80% range.\n"
+        f"* **A simple benchmark does about as well:** last year's median for each job title scores "
+        f"R² {base['R2']:.3f}, versus {ours['R2']:.3f} for the model. That itself confirms SF pays by "
+        "job classification. The model adds calibrated ranges and estimates for any job, "
+        "department and union combination."
     )
-    fig = go.Figure()
-    for col, name, color in [("index_base", "Base salary", BLUE),
-                             ("index_benefits", "Benefits", ORANGE),
-                             ("index_total", "Total compensation", AQUA)]:
-        fig.add_trace(go.Scatter(x=trend["year"], y=trend[col], name=name, mode="lines+markers",
-                                 line=dict(color=color, width=2), marker=dict(size=8),
-                                 hovertemplate=f"{name}<br>FY%{{x}}: %{{y:.0f}}<extra></extra>"))
-    fig.update_yaxes(title=f"Index (FY{H['first_year']} = 100)")
-    fig.update_xaxes(dtick=1, title=None)
-    st.plotly_chart(style(fig), width="stretch")
-
-    st.subheader("2. Overtime is concentrated in public safety")
-    top = ot.head(3)
-    st.markdown(
-        f"Overtime is {H['overtime_share_latest']:.1%} of the city's cash pay overall. In "
-        + ", ".join(f"**{r.department}** ({r.overtime_share_of_cash_pay:.0%})" for r in top.itertuples())
-        + " it is roughly one dollar in every five or six. "
-        f"City-wide it rose from {H['overtime_share_first']:.1%} in FY{H['first_year']} "
-        f"to a peak of {trend['overtime_share_of_cash_pay'].max():.1%} in "
-        f"FY{int(trend.loc[trend['overtime_share_of_cash_pay'].idxmax(), 'year'])}."
-    )
-    show = ot.head(15).iloc[::-1]
-    fig = go.Figure(go.Bar(
-        x=show["overtime_share_of_cash_pay"], y=show["department"], orientation="h",
-        marker_color=BLUE, customdata=show[["employees", "overtime_total_musd", "share_ot_over_25pct_of_base"]],
-        hovertemplate=("%{y}<br>Overtime share of cash pay: %{x:.1%}<br>"
-                       "Overtime paid: $%{customdata[1]:.1f}M<br>"
-                       "Employees with OT > 25% of base: %{customdata[2]:.0%}<br>"
-                       "Full-year employees: %{customdata[0]:,}<extra></extra>")))
-    fig.update_xaxes(tickformat=".0%", title=f"Overtime as a share of cash pay, FY{LATEST}")
-    st.plotly_chart(style(fig, 480), width="stretch")
-
-    st.subheader("3. Same job, same pay. Almost.")
-    st.markdown(
-        f"{H['jobs_in_multiple_departments']} job titles have at least 15 full-year employees in two or "
-        f"more departments. For the typical one, the median pay gap between departments is only "
-        f"**{H['median_gap_pct_total']:.1%}**. SF pays by job classification, not by department. "
-        "The exceptions are worth a look: some come from overtime, others from different seniority mixes."
-    )
-    options = gaps.head(12)
-    pick = st.selectbox("Job title", options["job"] + "  ·  " + options["job_code"], key="gap_job")
-    code = pick.rsplit("·", 1)[1].strip()
-    d = detail[detail["job_code"] == code].sort_values("median_total")
-    fig = go.Figure()
-    fig.add_trace(go.Bar(y=d["department"], x=d["median_base"], name="Median base salary",
-                         orientation="h", marker_color=BLUE,
-                         hovertemplate="%{y}<br>Base: %{x:$,.0f}<extra></extra>"))
-    fig.add_trace(go.Bar(y=d["department"], x=d["median_total"], name="Median total comp",
-                         orientation="h", marker_color=ORANGE,
-                         customdata=d["n"],
-                         hovertemplate="%{y}<br>Total: %{x:$,.0f}<br>%{customdata} employees<extra></extra>"))
-    fig.update_layout(barmode="group", bargap=0.35, bargroupgap=0.08)
-    fig.update_xaxes(tickformat="$,.0f", title=None)
-    st.plotly_chart(style(fig, 140 + 70 * len(d)), width="stretch")
-
-# ------------------------------------------------------------------ model
-with tab_model:
-    ev = meta["eval"]
-    comp = T["comparison"]
-    ours = comp.loc["LightGBM (this model)"]
-    base = comp.loc["Job title median (last year, grown)"]
-
-    st.subheader("The question")
-    st.markdown(
-        "Given only what you know about a role (job title, job family, department, organisation "
-        "group, union and year), what total compensation should you expect?\n\n"
-        "The six pay components (salary, overtime, other salary, retirement, health & dental, other "
-        "benefits) add up *exactly* to total compensation, so none of them are used as inputs. "
-        "A model given those columns scores R² ≈ 0.999, but it has only learned addition."
-    )
-
-    st.subheader("How it was tested")
-    st.markdown(
-        f"* **Trained on FY{ev['train_years'][0]}-{ev['train_years'][1]}, tested on FY{ev['test_year']}.** "
-        f"A random split would let the same person appear in training and test across years.\n"
-        f"* **Full-year employees only** ({ev['n_train']:,} training rows, {ev['n_test']:,} test rows). "
-        "Part-year and part-time records are kept in the data but flagged.\n"
-        "* **Pay level and pay structure are modelled separately.** A city-wide pay index captures "
-        "inflation and pay rises (projected forward on its trend). A LightGBM model learns each "
-        "role's pay relative to that index.\n"
-        "* **Ranges come from quantile models** (10th and 90th percentile), calibrated on the year "
-        "before the test year so the band really covers about 80% of people."
-    )
-
-    st.subheader(f"Results on FY{ev['test_year']} (never seen in training)")
     show = comp.copy()
     show.columns = ["R²", "Mean abs. error", "Median abs. % error", "Within 10%", "80% range covers"]
     fmt = {"R²": "{:.3f}", "Mean abs. error": "${:,.0f}", "Median abs. % error": "{:.1%}",
@@ -314,36 +329,20 @@ with tab_model:
     for col, f in fmt.items():
         show[col] = show[col].map(lambda v, f=f: "n/a" if pd.isna(v) else f.format(v))
     st.dataframe(show, width="stretch")
-    st.markdown(
-        f"**The honest takeaway:** the role explains about **{ours['R2']:.0%}** of the variation in pay. "
-        f"A simple lookup of last year's median for each job title does almost exactly as well "
-        f"(R² {base['R2']:.3f} vs {ours['R2']:.3f}). That is a finding in itself: SF pay is set by "
-        "job classification, and most of what's left is individual (overtime hours, seniority steps, "
-        "time on leave), which no role-level model can know.\n\n"
-        f"What the model adds is a **calibrated range** ({ours['coverage_80']:.0%} of FY{ev['test_year']} "
-        "employees fell inside it), estimates for job, department and union combinations, and a "
-        "breakdown of what drives each estimate."
-    )
 
-    st.subheader("What drives pay")
-    imp = T["importance"].iloc[::-1]
-    fig = go.Figure(go.Bar(x=imp["share"], y=imp["feature"], orientation="h", marker_color=BLUE,
-                           hovertemplate="%{y}: %{x:.0%} of total effect<extra></extra>"))
-    fig.update_xaxes(tickformat=".0%", title="Share of the model's total effect (mean |contribution|)")
-    st.plotly_chart(style(fig, 300), width="stretch")
-
-    st.subheader("Limitations")
+with st.expander("Limitations"):
     inc = ", ".join(f"FY{y}" for y in H["incomplete_years"]) or "none"
     st.markdown(
         f"* **Incomplete years excluded:** {inc}. In the source export, health & dental was $0 for "
         "about 93% of FY2022 records, which would make FY2022 look like a pay cut.\n"
         "* **No hours worked.** \"Full year\" is a proxy: base salary at least half the job's median "
         "that year, and at least $15k.\n"
-        "* **No seniority, tenure or individual history.** That is deliberate (the estimate is for a "
-        "role, not a person) and it is the main reason R² stops near 0.78.\n"
+        "* **No seniority or individual history.** That is deliberate, since the estimate is for a "
+        "role, not a person.\n"
         "* **Projections assume the historical pay trend continues.**"
     )
 
+st.markdown('<div class="chapter"></div>', unsafe_allow_html=True)
 st.divider()
 st.caption(
     "Data: [DataSF Employee Compensation](https://data.sfgov.org/d/88g8-5mnd) · "
